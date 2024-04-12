@@ -6,81 +6,88 @@
 
 #include "time_mgt.h"
 
-/**** Defines ****/
+/**** Private defines ****/
 
-#define SENSOR_MAGNET_COUNT 12U
-#define US_TO_MIN(x)        ((float)x/60e6)
+#define SENSOR_MAGNET_COUNT               12U  /* Number of magnets per crankset turn */
+#define AVERAGE_RESET_TIME_THRESHOLD_US   1e6  /* Reset average after 1 second of no pedaling */
 
-/**** Public variables ****/
+#define US_TO_MIN(x)        ((float)(x)/60.0e6F)
 
-static uint32_t time_delta_magnet_us;
-static uint32_t time_delta_turn_us;
+/**** Private variables ****/
+
+static float pedaling_speed_rpm = 0.0F;
+static float pedaling_speed_average_rpm = 0.0F;
 
 /**** Public API ****/
 
 float get_pedaling_speed(void)
 {
-    /* Between two magnets the crankset has rotated of 1.0/SENSOR_MAGNET_COUNT
-       turn and it took time_delta microseconds. So we can calculate te current
-       pedaling speed :
-       RPM = 1 / (time_delta_magnet_minute * SENSOR_MAGNET_COUNT)
-    */
-    return 1.0F / (US_TO_MIN((float)time_delta_magnet_us) * (float)SENSOR_MAGNET_COUNT);
+    return pedaling_speed_rpm;
 }
 
 float get_average_pedaling_speed(void)
 {
-    /* The average pedaling speed on the previous turn is simply
-       the inverse of the time (in minute) elapased during the last turn
-    */
-    return 1.0F / US_TO_MIN((float)time_delta_turn_us);
+    return pedaling_speed_average_rpm;
 }
 
 void new_magnet_cb(void)
 {
-    static uint8_t magnet_count = 0U;
+    static uint8_t start_magnet_index = 0U;
+    static uint8_t magnet_index = 0U;
     static uint32_t timestamps[SENSOR_MAGNET_COUNT] = {0UL};
     static uint32_t previous_timestamp = 0UL;
-    uint32_t oldest_timestamp = 0UL;
-    uint32_t current_timestamp = 0UL;
+    uint32_t oldest_timestamp;
+    uint32_t current_timestamp;
 
-    /* Circular buffer to compute average pedaling speed */
-    if(magnet_count >= (SENSOR_MAGNET_COUNT - 1U))
-    {
-        oldest_timestamp = timestamps[0];
-        magnet_count = 0U;
-    }
-    else
-    {
-        magnet_count++;
-        oldest_timestamp = timestamps[magnet_count];
-    }
-
+    /* Get current timestamp */
     current_timestamp = get_timestamp();
 
-    /* Store the current timestamp for next turn computation */
-    timestamps[magnet_count] = current_timestamp;
-
-    /* Compute elapsed time since last magnet detection */
-    if(current_timestamp < previous_timestamp) /* timestamp overflow */
+    /* if duration since last pedal stroke exeed thresold, reset indexes */
+    if((current_timestamp - previous_timestamp) > AVERAGE_RESET_TIME_THRESHOLD_US)
     {
-        time_delta_magnet_us = UINT32_MAX - previous_timestamp + current_timestamp;
+        start_magnet_index = 0U;
+        magnet_index = 0U;
+    }
+
+    /* Instantaneous pedaling speed computation for first magnet detection (force to 0.0 RPM) */
+    if(start_magnet_index == 0U)
+    {
+        pedaling_speed_rpm = 0.0F;
+    }
+    else /* Instantaneous pedaling speed computation in general case */
+    {
+        pedaling_speed_rpm = 1.0F / ((float)SENSOR_MAGNET_COUNT * US_TO_MIN((float)current_timestamp - (float)previous_timestamp));
+    }
+
+    /* Pedaling speed average management for first crankset turn */
+    if(start_magnet_index < SENSOR_MAGNET_COUNT)
+    {
+        /* Oldest timestamp is the first recorded timestamp */
+        oldest_timestamp = timestamps[0U];
+
+        /* Average pedaling speed during the first turn is calculated on the portion of turn */
+        pedaling_speed_average_rpm = (float)start_magnet_index / (US_TO_MIN((float)current_timestamp - (float)oldest_timestamp) * (float)SENSOR_MAGNET_COUNT);
+
+        /* Count number of magnets since begining of stroke */
+        start_magnet_index++;
     }
     else
     {
-        time_delta_magnet_us = current_timestamp - previous_timestamp;     
+        /* Average pedaling speed in normal case is simply calculated with the difference of timestamp
+           after one turn */
+        oldest_timestamp = timestamps[magnet_index];
+        /* If current < oldest (timestamp overflow) unsigned int substraction still
+           gives the correct result (circular arithmetic) */
+        pedaling_speed_average_rpm = 1.0F / US_TO_MIN((float)current_timestamp - (float)oldest_timestamp);
     }
 
-    /* Compute elapsed time during the last full crankset turn */
-    if(current_timestamp < oldest_timestamp) /* timestamp overflow */
-    {
-        time_delta_turn_us = UINT32_MAX - oldest_timestamp + current_timestamp;
-    }
-    else
-    {
-        time_delta_turn_us = current_timestamp - oldest_timestamp;
-    }
+    /* Store the current timestamp for next turn average pedaling speed computation */
+    timestamps[magnet_index] = current_timestamp;
 
-    /* Store previous timestamp for next magnet computation */
+    /* Store previous timestamp for next magnet pedaling speed computation */
     previous_timestamp = current_timestamp;
+
+    /* Circular index to know the relative position of the current magnet */
+    magnet_index++;
+    magnet_index %= SENSOR_MAGNET_COUNT;
 }

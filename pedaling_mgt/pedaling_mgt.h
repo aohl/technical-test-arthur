@@ -14,7 +14,7 @@ float get_pedaling_speed(void);
 /**
  * @brief Return average current pedaling speed in RPM
  *
- * @note At least one turn of crankset must be done to get an accurate value
+ * @note Average is resetted after AVERAGE_RESET_TIME_THRESHOLD_US microseconds without pedaling
  */
 float get_average_pedaling_speed(void);
 
